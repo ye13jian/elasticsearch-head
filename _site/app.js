@@ -595,7 +595,7 @@
 			data: function( DataSourceInterface )
 		 */
 		_getSummary: function(res) {
-			this.summary = i18n.text("TableResults.Summary", res._shards.successful, res._shards.total, res.hits.total, (res.took / 1000).toFixed(3));
+			this.summary = i18n.text("TableResults.Summary", res._shards.successful, res._shards.total, (typeof res.hits.total === 'object') ? res.hits.total.value : res.hits.total, (res.took / 1000).toFixed(3));
 		},
 		_getMeta: function(res) {
 			this.meta = { total: res.hits.total, shards: res._shards, tool: res.took };
@@ -694,6 +694,8 @@
 
 	var coretype_map = {
 		"string" : "string",
+		"keyword" : "string",
+		"text" : "string",
 		"byte" : "number",
 		"short" : "number",
 		"long" : "number",
@@ -826,9 +828,39 @@
 		},
 		init: function() {
 			this._super();
+			var _cluster = this.config.cluster;
 			this.config.cluster.get("_cluster/state", function(data) {
 				this.metaData = new app.data.MetaData({state: data});
-				this.fire("ready", this.metaData,  { originalData: data }); // TODO originalData needed for legacy ui.FilterBrowser
+				this.fire("ready", this.metaData,  { originalData: data, "k": 1 }); // TODO originalData needed for legacy ui.FilterBrowser
+			}.bind(this), function() {
+				
+				var _this = this;
+				
+				_cluster.get("_all", function( data ) {
+					clusterState = {routing_table:{indices:{}}, metadata:{indices:{}}};
+					
+					for(var k in data) {
+						clusterState["routing_table"]["indices"][k] = {"shards":{"1":[{
+                            "state":"UNASSIGNED",
+                            "primary":false,
+                            "node":"unknown",
+                            "relocating_node":null,
+                            "shard":'?',
+                            "index":k
+                        }]}};
+						
+
+						clusterState["metadata"]["indices"][k] = {};
+						clusterState["metadata"]["indices"][k]["mappings"] = data[k]["mappings"];
+						clusterState["metadata"]["indices"][k]["aliases"] = $.makeArray(Object.keys(data[k]["aliases"]));
+						clusterState["metadata"]["indices"][k]["settings"] = data[k]["settings"];
+						clusterState["metadata"]["indices"][k]["fields"] = {};
+					}
+					
+					_this.metaData = new app.data.MetaData({state: clusterState});
+					_this.fire("ready", _this.metaData, {originalData: clusterState});
+				});				
+
 			}.bind(this));
 		}
 	});
@@ -853,7 +885,6 @@
 			this.indices = [];
 			this.types = [];
 			this.search = {
-				fields : [ "_parent", "_source" ],
 				query: { bool: { must: [], must_not: [], should: [] } },
 				from: 0,
 				size: this.config.size,
@@ -961,7 +992,7 @@
 			this.search.from = this.config.size * (page - 1);
 		},
 		setSort: function(index, desc) {
-			var sortd = {}; sortd[index] = { reverse: !!desc };
+			var sortd = {}; sortd[index] = { order: desc ? 'asc' : 'desc' };
 			this.search.sort.unshift( sortd );
 			for(var i = 1; i < this.search.sort.length; i++) {
 				if(Object.keys(this.search.sort[i])[0] === index) {
@@ -1057,9 +1088,9 @@
 		_results_handler: function(query, res) {
 			this._getSummary(res);
 			this._getMeta(res);
-			var sort = query.search.sort[0] || { "_score": { reverse: false }};
+			var sort = query.search.sort[0] || { "_score": { order: "asc" }};
 			var sortField = Object.keys(sort)[0];
-			this.sort = { column: sortField, dir: (sort[sortField].reverse ? "asc" : "desc") };
+			this.sort = { column: sortField, dir: sort[sortField].order };
 			this._getData(res, this.config.metadata);
 			this.fire("data", this);
 		},
@@ -1182,14 +1213,12 @@
 			var clause = {}, query = {};
 			if(op === "match_all") {
 			} else if(op === "query_string") {
-				query["default_field"] = field;
+				query["default_field"] = field.substring(field.indexOf(".")+1);
 				query["query"] = value;
 			} else if(op === "missing") {
-				op = "constant_score"
-				var missing = {}, filter = {};
-				missing["field"] = field;
-				filter["missing"] = missing
-				query["filter"] = filter;
+				op = "exists";
+				bool = "must_not";
+				query["field"] = field.substring(field.indexOf(".")+1);
 			} else {
 				query[field.substring(field.indexOf(".")+1)] = value;
 			}
@@ -1271,6 +1300,7 @@
 		request: function( params ) {
 			return $.ajax( $.extend({
 				url: this.base_uri + params.path,
+				contentType: "application/json",
 				dataType: "json",
 				error: function(xhr, type, message) {
 					if("console" in window) {
@@ -1279,10 +1309,10 @@
 				}
 			},  params) );
 		},
-		"get": function(path, success) { return this.request( { type: "GET", path: path, success: success } ); },
-		"post": function(path, data, success) { return this.request( { type: "POST", path: path, data: data, success: success } ); },
-		"put": function(path, data, success) { return this.request( { type: "PUT", path: path, data: data, success: success } ); },
-		"delete": function(path, data, success) { return this.request( { type: "DELETE", path: path, data: data, success: success } ); }
+		"get": function(path, success, error) { return this.request( { type: "GET", path: path, success: success, error: error } ); },
+		"post": function(path, data, success, error) { return this.request( { type: "POST", path: path, data: data, success: success, error: error } ); },
+		"put": function(path, data, success, error) { return this.request( { type: "PUT", path: path, data: data, success: success, error: error } ); },
+		"delete": function(path, data, success, error) { return this.request( { type: "DELETE", path: path, data: data, success: success, error: error } ); }
 	});
 
 })( this.jQuery, this.app );
@@ -1316,15 +1346,41 @@
 					this.fire( "data", this );
 				}
 			}
-			this.cluster.get("_cluster/state", function( data ) {
+			var _cluster = this.cluster;
+			_cluster.get("_cluster/state", function( data ) {
 				clusterState = data;
 				updateModel.call( self );
+			},function() {
+				
+				_cluster.get("_all", function( data ) {
+					clusterState = {routing_table:{indices:{}}, metadata:{indices:{}}};
+					
+					for(var k in data) {
+						clusterState["routing_table"]["indices"][k] = {"shards":{"1":[{
+                            "state":"UNASSIGNED",
+                            "primary":false,
+                            "node":"unknown",
+                            "relocating_node":null,
+                            "shard":'?',
+                            "index":k
+                        }]}};
+						
+
+						clusterState["metadata"]["indices"][k] = {};
+						clusterState["metadata"]["indices"][k]["mappings"] = data[k]["mappings"];
+						clusterState["metadata"]["indices"][k]["aliases"] = $.makeArray(Object.keys(data[k]["aliases"]));
+						clusterState["metadata"]["indices"][k]["settings"] = data[k]["settings"];
+					}
+					
+					updateModel.call( self );
+				});
+				
 			});
 			this.cluster.get("_stats", function( data ) {
 				status = data;
 				updateModel.call( self );
 			});
-			this.cluster.get("_nodes/stats?all=true", function( data ) {
+			this.cluster.get("_nodes/stats", function( data ) {
 				nodeStats = data;
 				updateModel.call( self );
 			});
@@ -1395,7 +1451,7 @@
 		},
 
 		remove: function() {
-			this.el.remove();
+			if ( this.el !== null ) { this.el.remove(); }
 			this.fire("removed", this );
 			this.removeAllObservers();
 			this.el = null;
@@ -2832,6 +2888,7 @@
 					.children().find(":last-child").each(function(i, j) { j.scrollIntoView(false); }).end()
 					.scrollLeft(0);
 			}
+			if (type === 'GET') { query = null; }
 			this.config.cluster.request({
 				url: base_uri + path,
 				type: type,
@@ -3067,6 +3124,28 @@
 				}.bind(this)
 			}).open();
 		},
+		_forceMergeIndex_handler: function(index) {
+                        var fields = new app.ux.FieldCollection({
+                                fields: [
+                                        new ui.TextField({ label: i18n.text("ForceMergeForm.MaxSegments"), name: "max_num_segments", value: "1", require: true }),
+                                        new ui.CheckField({ label: i18n.text("ForceMergeForm.ExpungeDeletes"), name: "only_expunge_deletes", value: false }),
+                                        new ui.CheckField({ label: i18n.text("ForceMergeForm.FlushAfter"), name: "flush", value: true })
+                                ]
+                        });
+                        var dialog = new ui.DialogPanel({
+                                title: i18n.text("ForceMergeForm.ForceMergeIndex", index.name),
+                                body: new ui.PanelForm({ fields: fields }),
+                                onCommit: function( panel, args ) {
+                                        if(fields.validate()) {
+
+                                                this.cluster.post(encodeURIComponent( index.name ) + "/_forcemerge?"+jQuery.param(fields.getData()), null, function(r) {
+                                                        alert(JSON.stringify(r));
+                                                });
+                                                dialog.close();
+                                        }
+                                }.bind(this)
+                        }).open();
+		},
 		_testAnalyser_handler: function(index) {
 			this.cluster.get(encodeURIComponent( index.name ) + "/_analyze?text=" + encodeURIComponent( prompt( i18n.text("IndexCommand.TextToAnalyze") ) ), function(r) {
 				alert(JSON.stringify(r, true, "  "));
@@ -3194,7 +3273,7 @@
 							{ text: i18n.text("IndexActionsMenu.NewAlias"), onclick: function() { this._newAliasAction_handler(index); }.bind(this) },
 							{ text: i18n.text("IndexActionsMenu.Refresh"), onclick: function() { this._postIndexAction_handler("_refresh", index, false); }.bind(this) },
 							{ text: i18n.text("IndexActionsMenu.Flush"), onclick: function() { this._postIndexAction_handler("_flush", index, false); }.bind(this) },
-							{ text: i18n.text("IndexActionsMenu.Optimize"), onclick: function () { this._optimizeIndex_handler(index); }.bind(this) },
+							{ text: this.cluster.versionAtLeast("5.0.0.") ? i18n.text("IndexActionsMenu.ForceMerge") : i18n.text("IndexActionsMenu.Optimize"), onclick: this.cluster.versionAtLeast("5.0.0.") ? function () { this._forceMergeIndex_handler(index); }.bind(this) : function () { this._optimizeIndex_handler(index); }.bind(this) },
 							{ text: i18n.text("IndexActionsMenu.Snapshot"), disabled: closed, onclick: function() { this._postIndexAction_handler("_gateway/snapshot", index, false); }.bind(this) },
 							{ text: i18n.text("IndexActionsMenu.Analyser"), onclick: function() { this._testAnalyser_handler(index); }.bind(this) },
 							{ text: (index.state === "close") ? i18n.text("IndexActionsMenu.Open") : i18n.text("IndexActionsMenu.Close"), onclick: function() { this._postIndexAction_handler((index.state === "close") ? "_open" : "_close", index, true); }.bind(this) },
@@ -3284,6 +3363,12 @@
 	}
 
 	function nodeSort_addr( a, b ) {
+		if (!a.cluster.transport_address) {
+			return -1;
+		}
+		if (!b.cluster.transport_address) {
+			return 1;
+		}
 		if (!(a.cluster && b.cluster)) {
 			return 0;
 		}
@@ -3352,6 +3437,21 @@
 					onSelect: function( panel, event ) {
 						this._nodeSort = NODE_SORT_TYPES[ event.value ];
 						this.prefs.set("clusterOverview-nodeSort", event.value );
+						this.draw_handler();
+					}.bind(this)
+				})
+			});
+			this._indicesSort = this.prefs.get( "clusterOverview-indicesSort") || "desc";
+			this._indicesSortMenu = new ui.MenuButton({
+				label: i18n.text( "Preference.SortIndices" ),
+				menu: new ui.SelectMenuPanel({
+					value: this._indicesSort,
+					items: [
+						{ value: "desc", text: i18n.text( "SortIndices.Descending" ) },
+						{ value: "asc", text: i18n.text( "SortIndices.Ascending" ) } ],
+					onSelect: function( panel, event ) {
+						this._indicesSort = event.value;
+						this.prefs.set( "clusterOverview-indicesSort", this._indicesSort );
 						this.draw_handler();
 					}.bind(this)
 				})
@@ -3440,7 +3540,9 @@
 			$.each(clusterState.routing_table.indices, function(name, index){
 				indexNames.push(name);
 			});
-			indexNames.sort().filter( indexFilter ).forEach(function(name) {
+			indexNames.sort();
+			if (this._indicesSort === "desc") indexNames.reverse();
+			indexNames.filter( indexFilter ).forEach(function(name) {
 				var indexObject = clusterState.routing_table.indices[name];
 				$.each(indexObject.shards, function(name, shard) {
 					shard.forEach(function(replica){
@@ -3489,7 +3591,9 @@
 				node.data_node = !( cluster && cluster.attributes && cluster.attributes.data === "false" );
 				for(var i = 0; i < indices.length; i++) {
 					node.routings[i] = node.routings[i] || { name: indices[i].name, replicas: [] };
-					node.routings[i].max_number_of_shards = indices[i].metadata.settings["index.number_of_shards"];
+					if (indices[i].metadata.settings) {
+						node.routings[i].max_number_of_shards = indices[i].metadata.settings["index.number_of_shards"];
+					}
 					node.routings[i].open = indices[i].state === "open";
 				}
 			});
@@ -3536,6 +3640,7 @@
 					label: i18n.text("Overview.PageTitle"),
 					left: [
 						this._nodeSortMenu,
+						this._indicesSortMenu,
 						this._aliasMenu,
 						this._indexFilter
 					],
@@ -3674,6 +3779,8 @@
 		_node_handler: function(data) {
 			if(data) {
 				this.prefs.set("app-base_uri", this.cluster.base_uri);
+				if(data.version && data.version.number)
+					this.cluster.setVersion(data.version.number);
 			}
 		},
 		
@@ -3831,13 +3938,14 @@
 						for (var subField in obj.fields) {
 							filters.push({ path: (path[path.length - 1] !== subField) ? path.concat(subField) : path, type: obj.fields[subField].type, meta: obj.fields[subField] });
 						}
-					} else {
-						filters.push({ path: path, type: obj.type, meta: obj });
 					}
+					filters.push({ path: path, type: obj.type, meta: obj });
 				}
 			}
-			for(var type in data[this.config.index].mappings) {
-				scan_properties([type], data[this.config.index].mappings[type]);
+			if (data[this.config.index]){
+				for(var type in data[this.config.index].mappings) {
+					scan_properties([type], data[this.config.index].mappings[type]);
+				}
 			}
 
 			filters.sort( function(a, b) {
@@ -3919,8 +4027,8 @@
 			if(spec.type === 'match_all') {
 			} else if(spec.type === '_all') {
 				ops = ["query_string"];
-			} else if(spec.type === 'string') {
-				ops = ["term", "wildcard", "prefix", "fuzzy", "range", "query_string", "text", "missing"];
+			} else if(spec.type === 'string' || spec.type === 'text' || spec.type === 'keyword') {
+				ops = ["match", "term", "wildcard", "prefix", "fuzzy", "range", "query_string", "text", "missing"];
 			} else if(spec.type === 'long' || spec.type === 'integer' || spec.type === 'float' ||
 					spec.type === 'byte' || spec.type === 'short' || spec.type === 'double') {
 				ops = ["term", "range", "fuzzy", "query_string", "missing"];
@@ -3940,7 +4048,7 @@
 		_changeQueryOp_handler: function(jEv) {
 			var op = $(jEv.target), opv = op.val();
 			op.siblings().remove(".qual,.range,.fuzzy");
-			if(opv === 'term' || opv === 'wildcard' || opv === 'prefix' || opv === "query_string" || opv === 'text') {
+			if(opv === 'match' || opv === 'term' || opv === 'wildcard' || opv === 'prefix' || opv === "query_string" || opv === 'text') {
 				op.after({ tag: "INPUT", cls: "qual", type: "text" });
 			} else if(opv === 'range') {
 				op.after(this._range_template());

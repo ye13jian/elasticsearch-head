@@ -35,13 +35,14 @@
 						for (var subField in obj.fields) {
 							filters.push({ path: (path[path.length - 1] !== subField) ? path.concat(subField) : path, type: obj.fields[subField].type, meta: obj.fields[subField] });
 						}
-					} else {
-						filters.push({ path: path, type: obj.type, meta: obj });
 					}
+					filters.push({ path: path, type: obj.type, meta: obj });
 				}
 			}
-			for(var type in data[this.config.index].mappings) {
-				scan_properties([type], data[this.config.index].mappings[type]);
+			if (data[this.config.index]){
+				for(var type in data[this.config.index].mappings) {
+					scan_properties([type], data[this.config.index].mappings[type]);
+				}
 			}
 
 			filters.sort( function(a, b) {
@@ -123,8 +124,8 @@
 			if(spec.type === 'match_all') {
 			} else if(spec.type === '_all') {
 				ops = ["query_string"];
-			} else if(spec.type === 'string') {
-				ops = ["term", "wildcard", "prefix", "fuzzy", "range", "query_string", "text", "missing"];
+			} else if(spec.type === 'string' || spec.type === 'text' || spec.type === 'keyword') {
+				ops = ["match", "term", "wildcard", "prefix", "fuzzy", "range", "query_string", "text", "missing"];
 			} else if(spec.type === 'long' || spec.type === 'integer' || spec.type === 'float' ||
 					spec.type === 'byte' || spec.type === 'short' || spec.type === 'double') {
 				ops = ["term", "range", "fuzzy", "query_string", "missing"];
@@ -144,7 +145,7 @@
 		_changeQueryOp_handler: function(jEv) {
 			var op = $(jEv.target), opv = op.val();
 			op.siblings().remove(".qual,.range,.fuzzy");
-			if(opv === 'term' || opv === 'wildcard' || opv === 'prefix' || opv === "query_string" || opv === 'text') {
+			if(opv === 'match' || opv === 'term' || opv === 'wildcard' || opv === 'prefix' || opv === "query_string" || opv === 'text') {
 				op.after({ tag: "INPUT", cls: "qual", type: "text" });
 			} else if(opv === 'range') {
 				op.after(this._range_template());

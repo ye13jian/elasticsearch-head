@@ -17,6 +17,12 @@
 	}
 
 	function nodeSort_addr( a, b ) {
+		if (!a.cluster.transport_address) {
+			return -1;
+		}
+		if (!b.cluster.transport_address) {
+			return 1;
+		}
 		if (!(a.cluster && b.cluster)) {
 			return 0;
 		}
@@ -85,6 +91,21 @@
 					onSelect: function( panel, event ) {
 						this._nodeSort = NODE_SORT_TYPES[ event.value ];
 						this.prefs.set("clusterOverview-nodeSort", event.value );
+						this.draw_handler();
+					}.bind(this)
+				})
+			});
+			this._indicesSort = this.prefs.get( "clusterOverview-indicesSort") || "desc";
+			this._indicesSortMenu = new ui.MenuButton({
+				label: i18n.text( "Preference.SortIndices" ),
+				menu: new ui.SelectMenuPanel({
+					value: this._indicesSort,
+					items: [
+						{ value: "desc", text: i18n.text( "SortIndices.Descending" ) },
+						{ value: "asc", text: i18n.text( "SortIndices.Ascending" ) } ],
+					onSelect: function( panel, event ) {
+						this._indicesSort = event.value;
+						this.prefs.set( "clusterOverview-indicesSort", this._indicesSort );
 						this.draw_handler();
 					}.bind(this)
 				})
@@ -173,7 +194,9 @@
 			$.each(clusterState.routing_table.indices, function(name, index){
 				indexNames.push(name);
 			});
-			indexNames.sort().filter( indexFilter ).forEach(function(name) {
+			indexNames.sort();
+			if (this._indicesSort === "desc") indexNames.reverse();
+			indexNames.filter( indexFilter ).forEach(function(name) {
 				var indexObject = clusterState.routing_table.indices[name];
 				$.each(indexObject.shards, function(name, shard) {
 					shard.forEach(function(replica){
@@ -222,7 +245,9 @@
 				node.data_node = !( cluster && cluster.attributes && cluster.attributes.data === "false" );
 				for(var i = 0; i < indices.length; i++) {
 					node.routings[i] = node.routings[i] || { name: indices[i].name, replicas: [] };
-					node.routings[i].max_number_of_shards = indices[i].metadata.settings["index.number_of_shards"];
+					if (indices[i].metadata.settings) {
+						node.routings[i].max_number_of_shards = indices[i].metadata.settings["index.number_of_shards"];
+					}
 					node.routings[i].open = indices[i].state === "open";
 				}
 			});
@@ -269,6 +294,7 @@
 					label: i18n.text("Overview.PageTitle"),
 					left: [
 						this._nodeSortMenu,
+						this._indicesSortMenu,
 						this._aliasMenu,
 						this._indexFilter
 					],

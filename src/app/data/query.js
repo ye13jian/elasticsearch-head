@@ -16,7 +16,6 @@
 			this.indices = [];
 			this.types = [];
 			this.search = {
-				fields : [ "_parent", "_source" ],
 				query: { bool: { must: [], must_not: [], should: [] } },
 				from: 0,
 				size: this.config.size,
@@ -124,7 +123,7 @@
 			this.search.from = this.config.size * (page - 1);
 		},
 		setSort: function(index, desc) {
-			var sortd = {}; sortd[index] = { reverse: !!desc };
+			var sortd = {}; sortd[index] = { order: desc ? 'asc' : 'desc' };
 			this.search.sort.unshift( sortd );
 			for(var i = 1; i < this.search.sort.length; i++) {
 				if(Object.keys(this.search.sort[i])[0] === index) {
